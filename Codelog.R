@@ -56,3 +56,87 @@ ggplot(data_plot, aes(x = as.POSIXct(datetime))) +
        x = "Date / Time", colour = "") +
   theme_minimal() +
   theme(legend.position = "bottom")
+
+
+
+#---------Null Values-------------#
+
+#all rows where the gage height is null
+null_rows <- df[is.na(df$gage_height), ]
+
+#all rows where the gage quality height is null
+null_quality <- df[is.na(df$gage_height_quality), ]
+
+#all rows where both gage quality and height are null
+null_both <- df[is.na(df$gage_height) & is.na(df$gage_height_quality), ]
+
+library(dplyr)
+library(ggplot2)
+
+# If you already have df loaded, skip this
+df <- read.csv("streamgage_07374000_20230519.csv")
+
+# If you already converted to UTC, use that column instead.
+# Otherwise, make datetime POSIXct (assumes it's in local time).
+df$datetime <- as.POSIXct(df$datetime, tz = "UTC")
+
+# Keep only rows where gage_height is NA, ordered by time
+null_rows <- df %>%
+  filter(is.na(gage_height)) %>%
+  arrange(datetime)
+
+null_range <- null_rows %>%
+  summarise(
+    first_null = min(datetime),
+    last_null  = max(datetime)
+  )
+
+null_range
+
+null_range <- null_rows %>%
+  summarise(
+    first_null = min(datetime),
+    last_null  = max(datetime)
+  )
+
+null_range
+
+interval <- 15 * 60  # 15 minutes in seconds
+
+null_rows <- null_rows %>%
+  mutate(
+    # time difference in seconds from previous null-row
+    diff_sec = as.numeric(difftime(datetime, lag(datetime), units = "secs")),
+    # new block starts if: first row (is.na(diff_sec)) OR gap > interval
+    new_block = if_else(is.na(diff_sec) | diff_sec > interval, 1L, 0L),
+    # cumulative sum of new_block flags creates block IDs: 1,2,3,...
+    block = cumsum(new_block)
+  )
+
+block_summary <- null_rows %>%
+  group_by(block) %>%
+  summarise(
+    start_time     = min(datetime),
+    end_time       = max(datetime),
+    n_points       = n(),                       # number of null rows in block
+    first_discharge = first(discharge),
+    last_discharge  = last(discharge),
+    min_discharge   = min(discharge, na.rm = TRUE),
+    max_discharge   = max(discharge, na.rm = TRUE),
+    mean_discharge  = mean(discharge, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(start_time)
+
+block_summary
+
+ggplot(null_rows, aes(x = datetime, y = discharge, colour = factor(block))) +
+  geom_point(alpha = 0.6, size = 1) +
+  labs(
+    colour = "Block",
+    x = "Time",
+    y = "Discharge",
+    title = "Discharge values during periods with null gage_height"
+  )
+
+sum(block_summary$n_points == 1) 
