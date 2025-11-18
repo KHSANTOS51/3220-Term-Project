@@ -78,7 +78,7 @@ dual_axis_plot <- ggplot(plot_window, aes(x = datetime)) +
 print(dual_axis_plot)
 
 set.seed(42)
-sample_size <- min(20000, nrow(gage_data))
+sample_size <- min(20000, nrow(gage_data)) # this is so that it doesn't take forever to render / load
 scatter_data <- gage_data[sample.int(nrow(gage_data), sample_size), ]
 
 scatter_plot <- ggplot(scatter_data, aes(x = gage_height, y = discharge)) +
@@ -102,6 +102,23 @@ format_arima_label <- function(model) {
     "ARIMA(%d,%d,%d)(%d,%d,%d)[%d]",
     ord[1], ord[2], ord[3], ord[4], ord[5], ord[6], ord[7]
   )
+}
+
+evaluate_forecast <- function(actual, predicted) {
+  actual_vec <- as.numeric(actual)
+  predicted_vec <- as.numeric(predicted)
+  len <- min(length(actual_vec), length(predicted_vec))
+  actual_vec <- actual_vec[seq_len(len)]
+  predicted_vec <- predicted_vec[seq_len(len)]
+  mask <- is.finite(actual_vec) & is.finite(predicted_vec)
+  actual_vec <- actual_vec[mask]
+  predicted_vec <- predicted_vec[mask]
+  rmse <- sqrt(mean((actual_vec - predicted_vec)^2))
+  mae <- mean(abs(actual_vec - predicted_vec))
+  ss_res <- sum((actual_vec - predicted_vec)^2)
+  ss_tot <- sum((actual_vec - mean(actual_vec))^2)
+  r_squared <- if (ss_tot > 0) 1 - ss_res / ss_tot else NA_real_
+  list(rmse = rmse, mae = mae, r_squared = r_squared)
 }
 
 # ------------------------
@@ -155,37 +172,33 @@ message(sprintf("train: %s | holdout: %s", train_size, holdout_size))
 
 discharge_train <- window(discharge_adjusted, end = c(0, train_size))
 discharge_test <- window(discharge_adjusted, start = c(0, train_size + 1))
-gage_height_train <- window(gage_height_adjusted, end = c(0, train_size))
-gage_height_test <- window(gage_height_adjusted, start = c(0, train_size + 1))
+discharge_test_vec <- as.numeric(discharge_test)
+gage_height_reg_train <- window(gage_height_adjusted, end = c(0, train_size))
+gage_height_reg_test <- window(gage_height_adjusted, start = c(0, train_size + 1))
+gage_height_reg_train_vec <- as.numeric(gage_height_reg_train)
+gage_height_reg_test_vec <- as.numeric(gage_height_reg_test)
 
 discharge_model <- auto.arima(
   discharge_train,
-  seasonal = TRUE,
-  stepwise = TRUE,
-  approximation = FALSE
-)
-
-gage_height_model <- auto.arima(
-  gage_height_train,
+  xreg = gage_height_reg_train_vec,
   seasonal = TRUE,
   stepwise = TRUE,
   approximation = FALSE
 )
 
 discharge_label <- format_arima_label(discharge_model)
-gage_height_label <- format_arima_label(gage_height_model)
-message(sprintf("discharge model: %s", discharge_label))
-message(sprintf("gage height model: %s", gage_height_label))
+message(sprintf("discharge model (with gage height regressor): %s", discharge_label))
 
-forecast_horizon <- holdout_size
-forecast_discharge <- forecast(discharge_model, h = forecast_horizon)
-forecast_gage_height <- forecast(gage_height_model, h = forecast_horizon)
+forecast_discharge <- forecast(
+  discharge_model,
+  xreg = gage_height_reg_test_vec
+)
 
 discharge_forecast_plot <- autoplot(forecast_discharge) +
   autolayer(discharge_test, series = "Actual") +
   labs(
     title = "Discharge forecast",
-    subtitle = discharge_label,
+    subtitle = paste(discharge_label, "+ gage-height regressor"),
     x = "Time",
     y = "Discharge (cfs)"
   ) +
@@ -193,37 +206,28 @@ discharge_forecast_plot <- autoplot(forecast_discharge) +
 
 print(discharge_forecast_plot)
 
-gage_height_forecast_plot <- autoplot(forecast_gage_height) +
-  autolayer(gage_height_test, series = "Actual") +
-  labs(
-    title = "Gage height forecast",
-    subtitle = gage_height_label,
-    x = "Time",
-    y = "Gage Height (ft)"
-  ) +
-  theme_minimal()
-
-print(gage_height_forecast_plot)
-
 discharge_accuracy <- accuracy(forecast_discharge, discharge_test)
-gage_height_accuracy <- accuracy(forecast_gage_height, gage_height_test)
-
 message(sprintf("discharge RMSE: %.2f", discharge_accuracy[2, "RMSE"]))
-message(sprintf("gage height RMSE: %.2f", gage_height_accuracy[2, "RMSE"]))
+
+# ------------------------
+# Model evaluation
+# ------------------------
+
+discharge_eval <- evaluate_forecast(discharge_test, forecast_discharge$mean)
+evaluation_summary <- data.frame(
+  series = "Discharge",
+  rmse = discharge_eval$rmse,
+  mae = discharge_eval$mae,
+  r_squared = discharge_eval$r_squared
+)
+
+message("evaluation metrics (RMSE for disaster readiness, MAE for daily reporting, R-squared for pattern capture):")
+print(evaluation_summary)
 
 # ------------------------
 # Diagnostics and summary
 # ------------------------
 
 checkresiduals(discharge_model)
-checkresiduals(gage_height_model)
-
 discharge_lb <- Box.test(residuals(discharge_model), lag = 20, type = "Ljung-Box")
-gage_height_lb <- Box.test(residuals(gage_height_model), lag = 20, type = "Ljung-Box")
-
 message(sprintf("discharge Ljung-Box p = %.3f", discharge_lb$p.value))
-message(sprintf("gage height Ljung-Box p = %.3f", gage_height_lb$p.value))
-
-message("data checks: z-score filter, A flag only, positive flows")
-message("next steps: alternative anomaly detection, external regressors")
-message("workflow complete")
