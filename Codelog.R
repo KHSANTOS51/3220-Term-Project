@@ -17,3 +17,5 @@ data <- subset(data, abs(discharge_z) <= 3 & abs(gage_height_z) <= 3)
 
 # Drop z-score columns and unnecessary columns
 data <- subset(data, select = -c(discharge_z, gage_height_z, agency, timezone))
+
+data <- subset(data, select = -c((id))
