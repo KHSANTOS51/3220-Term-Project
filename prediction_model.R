@@ -1,10 +1,7 @@
 library(ggplot2)
 library(forecast)
 
-# ------------------------
 # Data preparation
-# ------------------------
-
 clean_streamgage_data <- function(path) {
   data <- read.csv(path)
   data <- na.omit(data)
@@ -28,10 +25,7 @@ message(
   )
 )
 
-# ------------------------
 # Exploratory visualization
-# ------------------------
-
 scale_discharge_to_height <- function(discharge, height) {
   height_range <- range(height, na.rm = TRUE)
   discharge_range <- range(discharge, na.rm = TRUE)
@@ -121,10 +115,7 @@ evaluate_forecast <- function(actual, predicted) {
   list(rmse = rmse, mae = mae, r_squared = r_squared)
 }
 
-# ------------------------
 # Seasonal decomposition
-# ------------------------
-
 gage_data$date <- as.Date(gage_data$datetime)
 daily_data <- aggregate(cbind(discharge, gage_height) ~ date, data = gage_data, mean)
 daily_data <- daily_data[order(daily_data$date), ]
@@ -161,10 +152,7 @@ par(mfrow = c(1, 1), oma = c(0, 0, 0, 0), mar = c(5, 4, 4, 2) + 0.1)
 discharge_adjusted <- seasadj(discharge_stl)
 gage_height_adjusted <- seasadj(gage_height_stl)
 
-# ------------------------
-# ARIMA / SARIMA modeling
-# ------------------------
-
+# SARIMA modeling
 total_obs <- length(ts_discharge)
 train_size <- floor(0.8 * total_obs)
 holdout_size <- total_obs - train_size
@@ -209,10 +197,7 @@ print(discharge_forecast_plot)
 discharge_accuracy <- accuracy(forecast_discharge, discharge_test)
 message(sprintf("discharge RMSE: %.2f", discharge_accuracy[2, "RMSE"]))
 
-# ------------------------
 # Model evaluation
-# ------------------------
-
 discharge_eval <- evaluate_forecast(discharge_test, forecast_discharge$mean)
 evaluation_summary <- data.frame(
   series = "Discharge",
@@ -224,10 +209,7 @@ evaluation_summary <- data.frame(
 message("evaluation metrics (RMSE for disaster readiness, MAE for daily reporting, R-squared for pattern capture):")
 print(evaluation_summary)
 
-# ------------------------
 # Diagnostics and summary
-# ------------------------
-
 checkresiduals(discharge_model)
 discharge_lb <- Box.test(residuals(discharge_model), lag = 20, type = "Ljung-Box")
 message(sprintf("discharge Ljung-Box p = %.3f", discharge_lb$p.value))
