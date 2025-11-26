@@ -1,7 +1,14 @@
+# ============================================================================
+# ARIMA/SARIMA time-series workflow for USGS 07374000 (Baton Rouge)
+# ============================================================================
+
 library(ggplot2)
 library(forecast)
 
+# -----------------------------------------------------------------------------
 # Data preparation
+# -----------------------------------------------------------------------------
+
 clean_streamgage_data <- function(path) {
   data <- read.csv(path)
   data <- na.omit(data)
@@ -25,7 +32,10 @@ message(
   )
 )
 
+# -----------------------------------------------------------------------------
 # Exploratory visualization
+# -----------------------------------------------------------------------------
+
 scale_discharge_to_height <- function(discharge, height) {
   height_range <- range(height, na.rm = TRUE)
   discharge_range <- range(discharge, na.rm = TRUE)
@@ -72,7 +82,7 @@ dual_axis_plot <- ggplot(plot_window, aes(x = datetime)) +
 print(dual_axis_plot)
 
 set.seed(42)
-sample_size <- min(20000, nrow(gage_data)) # this is so that it doesn't take forever to render / load
+sample_size <- min(20000, nrow(gage_data))
 scatter_data <- gage_data[sample.int(nrow(gage_data), sample_size), ]
 
 scatter_plot <- ggplot(scatter_data, aes(x = gage_height, y = discharge)) +
@@ -115,7 +125,10 @@ evaluate_forecast <- function(actual, predicted) {
   list(rmse = rmse, mae = mae, r_squared = r_squared)
 }
 
+# -----------------------------------------------------------------------------
 # Seasonal decomposition
+# -----------------------------------------------------------------------------
+
 gage_data$date <- as.Date(gage_data$datetime)
 daily_data <- aggregate(cbind(discharge, gage_height) ~ date, data = gage_data, mean)
 daily_data <- daily_data[order(daily_data$date), ]
@@ -152,41 +165,91 @@ par(mfrow = c(1, 1), oma = c(0, 0, 0, 0), mar = c(5, 4, 4, 2) + 0.1)
 discharge_adjusted <- seasadj(discharge_stl)
 gage_height_adjusted <- seasadj(gage_height_stl)
 
-# SARIMA modeling
+# -----------------------------------------------------------------------------
+# ARIMA / SARIMA modeling with 80/10/10 Split
+# -----------------------------------------------------------------------------
+
 total_obs <- length(ts_discharge)
 train_size <- floor(0.8 * total_obs)
-holdout_size <- total_obs - train_size
-message(sprintf("train: %s | holdout: %s", train_size, holdout_size))
+val_size <- floor(0.1 * total_obs)
+test_size <- total_obs - train_size - val_size
 
+message(sprintf("Split: Train=%d | Val=%d | Test=%d", train_size, val_size, test_size))
+
+# Create windows for Train, Validation, Test
 discharge_train <- window(discharge_adjusted, end = c(0, train_size))
-discharge_test <- window(discharge_adjusted, start = c(0, train_size + 1))
-discharge_test_vec <- as.numeric(discharge_test)
-gage_height_reg_train <- window(gage_height_adjusted, end = c(0, train_size))
-gage_height_reg_test <- window(gage_height_adjusted, start = c(0, train_size + 1))
-gage_height_reg_train_vec <- as.numeric(gage_height_reg_train)
-gage_height_reg_test_vec <- as.numeric(gage_height_reg_test)
+discharge_val   <- window(discharge_adjusted, start = c(0, train_size + 1), end = c(0, train_size + val_size))
+discharge_test  <- window(discharge_adjusted, start = c(0, train_size + val_size + 1))
 
+gage_height_train <- window(gage_height_adjusted, end = c(0, train_size))
+gage_height_val   <- window(gage_height_adjusted, start = c(0, train_size + 1), end = c(0, train_size + val_size))
+gage_height_test  <- window(gage_height_adjusted, start = c(0, train_size + val_size + 1))
+
+# Convert regressor series to numeric vectors for ARIMA
+xreg_train <- as.numeric(gage_height_train)
+xreg_val   <- as.numeric(gage_height_val)
+xreg_test  <- as.numeric(gage_height_test)
+
+# 1. Train Model on 80%
 discharge_model <- auto.arima(
   discharge_train,
-  xreg = gage_height_reg_train_vec,
+  xreg = xreg_train,
   seasonal = TRUE,
   stepwise = TRUE,
   approximation = FALSE
 )
 
 discharge_label <- format_arima_label(discharge_model)
-message(sprintf("discharge model (with gage height regressor): %s", discharge_label))
+message(sprintf("Discharge model (Train 80%%): %s", discharge_label))
 
-forecast_discharge <- forecast(
-  discharge_model,
-  xreg = gage_height_reg_test_vec
+# 2. Validate on next 10%
+forecast_val <- forecast(discharge_model, xreg = xreg_val)
+val_accuracy <- accuracy(forecast_val, discharge_val)
+
+# 3. Test on final 10%
+# Re-fit model including validation data? Or just use same model?
+# Standard practice for 'test set accuracy' often implies using the model trained on Train+Val or just Train.
+# Here we use the model trained on 80% to forecast the Test set 
+# (Note: In true time-series cross-validation, one might re-fit. For this split, we'll project using the existing model).
+# However, forecast() usually expects contiguous horizon. 
+# To forecast the Test set using the Train-fitted model, we technically need to step through Val first.
+# A cleaner way for the Test metric is to fit a model on Train+Val and forecast Test, 
+# OR forecast h = val_size + test_size and subset. 
+# Let's keep it simple: Fit on Train, forecast Val. Then Fit on Train+Val, forecast Test.
+
+# -- Evaluation 1: Validation Set --
+message("\n--- Validation Set Performance (10%) ---")
+val_eval <- evaluate_forecast(discharge_val, forecast_val$mean)
+print(data.frame(RMSE=val_eval$rmse, MAE=val_eval$mae, R2=val_eval$r_squared))
+
+# -- Evaluation 2: Test Set --
+# Refit on Train + Validation (90% total) to predict Test (10%)
+# This mimics the 'production' step after validating the model architecture.
+discharge_train_val <- window(discharge_adjusted, end = c(0, train_size + val_size))
+xreg_train_val <- c(xreg_train, xreg_val)
+
+# We use the SAME order found in training to avoid re-selecting a different model structure, 
+# ensuring we are testing the *validated* model configuration.
+discharge_model_final <- Arima(
+  discharge_train_val,
+  order = arimaorder(discharge_model)[1:3],
+  seasonal = arimaorder(discharge_model)[4:6],
+  xreg = xreg_train_val
 )
 
-discharge_forecast_plot <- autoplot(forecast_discharge) +
-  autolayer(discharge_test, series = "Actual") +
+forecast_test <- forecast(discharge_model_final, xreg = xreg_test)
+test_accuracy <- accuracy(forecast_test, discharge_test)
+
+message("\n--- Test Set Performance (Final 10%) ---")
+test_eval <- evaluate_forecast(discharge_test, forecast_test$mean)
+print(data.frame(RMSE=test_eval$rmse, MAE=test_eval$mae, R2=test_eval$r_squared))
+
+# Plot Test Forecast
+discharge_forecast_plot <- autoplot(forecast_test) +
+  autolayer(discharge_test, series = "Actual (Test)") +
   labs(
-    title = "Discharge forecast",
-    subtitle = paste(discharge_label, "+ gage-height regressor"),
+    title = "Discharge Forecast (Test Set)",
+    subtitle = paste(discharge_label, "+ gage-height regressor (Refit on 90%)"),
     x = "Time",
     y = "Discharge (cfs)"
   ) +
@@ -194,22 +257,14 @@ discharge_forecast_plot <- autoplot(forecast_discharge) +
 
 print(discharge_forecast_plot)
 
-discharge_accuracy <- accuracy(forecast_discharge, discharge_test)
-message(sprintf("discharge RMSE: %.2f", discharge_accuracy[2, "RMSE"]))
-
-# Model evaluation
-discharge_eval <- evaluate_forecast(discharge_test, forecast_discharge$mean)
-evaluation_summary <- data.frame(
-  series = "Discharge",
-  rmse = discharge_eval$rmse,
-  mae = discharge_eval$mae,
-  r_squared = discharge_eval$r_squared
-)
-
-message("evaluation metrics (RMSE for disaster readiness, MAE for daily reporting, R-squared for pattern capture):")
-print(evaluation_summary)
-
+# -----------------------------------------------------------------------------
 # Diagnostics and summary
+# -----------------------------------------------------------------------------
+
 checkresiduals(discharge_model)
 discharge_lb <- Box.test(residuals(discharge_model), lag = 20, type = "Ljung-Box")
 message(sprintf("discharge Ljung-Box p = %.3f", discharge_lb$p.value))
+
+message("data checks: z-score filter, A flag only, positive flows")
+message("next steps: alternative anomaly detection, external regressors")
+message("workflow complete")
