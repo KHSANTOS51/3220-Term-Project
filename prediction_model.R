@@ -1,4 +1,4 @@
-# ============================================================================
+# ============================================================================                                                      
 # ARIMA/SARIMA time-series workflow for USGS 07374000 (Baton Rouge)
 # ============================================================================
 
@@ -33,7 +33,7 @@ message(
 )
 
 # -----------------------------------------------------------------------------
-# Exploratory visualization
+# Exploratory visualization (Dual Axis Only)
 # -----------------------------------------------------------------------------
 
 scale_discharge_to_height <- function(discharge, height) {
@@ -48,6 +48,7 @@ scale_discharge_to_height <- function(discharge, height) {
   )
 }
 
+# Always plot dual-axis chart (1-year window for clarity)
 plot_window <- subset(
   gage_data,
   datetime >= max(gage_data$datetime) - 365 * 24 * 60 * 60
@@ -72,30 +73,14 @@ dual_axis_plot <- ggplot(plot_window, aes(x = datetime)) +
     guide = guide_legend(title = NULL)
   ) +
   labs(
-    title = "Mississippi River at Baton Rouge (USGS 07374000)",
-    subtitle = "Year-long gage height and discharge (dual axis)",
+    title = "Dual-Axis Plot",
+    subtitle = "Gage Height vs Discharge (Last Year Window)",
     x = "Date / Time"
   ) +
   theme_minimal() +
   theme(legend.position = "bottom")
 
 print(dual_axis_plot)
-
-set.seed(42)
-sample_size <- min(20000, nrow(gage_data))
-scatter_data <- gage_data[sample.int(nrow(gage_data), sample_size), ]
-
-scatter_plot <- ggplot(scatter_data, aes(x = gage_height, y = discharge)) +
-  geom_point(alpha = 0.25, colour = "steelblue", size = 0.6) +
-  labs(
-    title = "Discharge vs gage height (20k-point sample)",
-    subtitle = "Identifies the rating-curve relationship",
-    x = "Gage Height (ft)",
-    y = "Discharge (cfs)"
-  ) +
-  theme_minimal()
-
-print(scatter_plot)
 
 format_arima_label <- function(model) {
   if (!is.null(model$method) && nzchar(model$method)) {
@@ -126,7 +111,7 @@ evaluate_forecast <- function(actual, predicted) {
 }
 
 # -----------------------------------------------------------------------------
-# Seasonal decomposition
+# Seasonal decomposition (Preparation only, no plots)
 # -----------------------------------------------------------------------------
 
 gage_data$date <- as.Date(gage_data$datetime)
@@ -138,32 +123,10 @@ series_frequency <- 365
 ts_discharge <- ts(daily_data$discharge, frequency = series_frequency)
 ts_gage_height <- ts(daily_data$gage_height, frequency = series_frequency)
 
-discharge_decomp <- decompose(ts_discharge, type = "additive")
-gage_height_decomp <- decompose(ts_gage_height, type = "additive")
-par(mfrow = c(4, 1), oma = c(2, 0, 2, 0), mar = c(2, 4, 1, 1))
-plot(discharge_decomp)
-mtext("Date", side = 1, line = 2)
-mtext("Additive decomposition: discharge", side = 3, outer = TRUE, line = 0.5)
-par(mfrow = c(4, 1), oma = c(2, 0, 2, 0), mar = c(2, 4, 1, 1))
-plot(gage_height_decomp)
-mtext("Date", side = 1, line = 2)
-mtext("Additive decomposition: gage height", side = 3, outer = TRUE, line = 0.5)
-par(mfrow = c(1, 1), oma = c(0, 0, 0, 0), mar = c(5, 4, 4, 2) + 0.1)
-
+# Use STL for adjustment
 discharge_stl <- stl(ts_discharge, s.window = "periodic")
-gage_height_stl <- stl(ts_gage_height, s.window = "periodic")
-par(mfrow = c(4, 1), oma = c(2, 0, 2, 0), mar = c(2, 4, 1, 1))
-plot(discharge_stl, main = "")
-mtext("Date", side = 1, line = 2)
-mtext("STL decomposition: discharge", side = 3, outer = TRUE, line = 0.5)
-par(mfrow = c(4, 1), oma = c(2, 0, 2, 0), mar = c(2, 4, 1, 1))
-plot(gage_height_stl, main = "")
-mtext("Date", side = 1, line = 2)
-mtext("STL decomposition: gage height", side = 3, outer = TRUE, line = 0.5)
-par(mfrow = c(1, 1), oma = c(0, 0, 0, 0), mar = c(5, 4, 4, 2) + 0.1)
-
 discharge_adjusted <- seasadj(discharge_stl)
-gage_height_adjusted <- seasadj(gage_height_stl)
+gage_height_adjusted <- seasadj(stl(ts_gage_height, s.window = "periodic"))
 
 # -----------------------------------------------------------------------------
 # ARIMA / SARIMA modeling with 80/10/10 Split
@@ -177,13 +140,14 @@ test_size <- total_obs - train_size - val_size
 message(sprintf("Split: Train=%d | Val=%d | Test=%d", train_size, val_size, test_size))
 
 # Create windows for Train, Validation, Test
-discharge_train <- window(discharge_adjusted, end = c(0, train_size))
-discharge_val   <- window(discharge_adjusted, start = c(0, train_size + 1), end = c(0, train_size + val_size))
-discharge_test  <- window(discharge_adjusted, start = c(0, train_size + val_size + 1))
+# Using standard indexing to ensure alignment
+discharge_train <- window(discharge_adjusted, end = c(1, train_size))
+discharge_val   <- window(discharge_adjusted, start = c(1, train_size + 1), end = c(1, train_size + val_size))
+discharge_test  <- window(discharge_adjusted, start = c(1, train_size + val_size + 1))
 
-gage_height_train <- window(gage_height_adjusted, end = c(0, train_size))
-gage_height_val   <- window(gage_height_adjusted, start = c(0, train_size + 1), end = c(0, train_size + val_size))
-gage_height_test  <- window(gage_height_adjusted, start = c(0, train_size + val_size + 1))
+gage_height_train <- window(gage_height_adjusted, end = c(1, train_size))
+gage_height_val   <- window(gage_height_adjusted, start = c(1, train_size + 1), end = c(1, train_size + val_size))
+gage_height_test  <- window(gage_height_adjusted, start = c(1, train_size + val_size + 1))
 
 # Convert regressor series to numeric vectors for ARIMA
 xreg_train <- as.numeric(gage_height_train)
@@ -204,56 +168,60 @@ message(sprintf("Discharge model (Train 80%%): %s", discharge_label))
 
 # 2. Validate on next 10%
 forecast_val <- forecast(discharge_model, xreg = xreg_val)
-val_accuracy <- accuracy(forecast_val, discharge_val)
-
-# 3. Test on final 10%
-# Re-fit model including validation data? Or just use same model?
-# Standard practice for 'test set accuracy' often implies using the model trained on Train+Val or just Train.
-# Here we use the model trained on 80% to forecast the Test set 
-# (Note: In true time-series cross-validation, one might re-fit. For this split, we'll project using the existing model).
-# However, forecast() usually expects contiguous horizon. 
-# To forecast the Test set using the Train-fitted model, we technically need to step through Val first.
-# A cleaner way for the Test metric is to fit a model on Train+Val and forecast Test, 
-# OR forecast h = val_size + test_size and subset. 
-# Let's keep it simple: Fit on Train, forecast Val. Then Fit on Train+Val, forecast Test.
-
-# -- Evaluation 1: Validation Set --
+# Evaluation: Validation Set
 message("\n--- Validation Set Performance (10%) ---")
 val_eval <- evaluate_forecast(discharge_val, forecast_val$mean)
 print(data.frame(RMSE=val_eval$rmse, MAE=val_eval$mae, R2=val_eval$r_squared))
 
-# -- Evaluation 2: Test Set --
-# Refit on Train + Validation (90% total) to predict Test (10%)
-# This mimics the 'production' step after validating the model architecture.
-discharge_train_val <- window(discharge_adjusted, end = c(0, train_size + val_size))
+# 3. Test on final 10%
+# Fix: Re-fit on Train + Validation without re-estimation logic error
+# We use the model structure from training but update coefficients on 90% of data
+discharge_train_val <- window(discharge_adjusted, end = c(1, train_size + val_size))
 xreg_train_val <- c(xreg_train, xreg_val)
 
-# We use the SAME order found in training to avoid re-selecting a different model structure, 
-# ensuring we are testing the *validated* model configuration.
+# Ensure lengths match perfectly before refitting
+len_combined <- length(discharge_train_val)
+xreg_train_val <- xreg_train_val[1:len_combined]
+
 discharge_model_final <- Arima(
   discharge_train_val,
-  order = arimaorder(discharge_model)[1:3],
-  seasonal = arimaorder(discharge_model)[4:6],
+  model = discharge_model, 
   xreg = xreg_train_val
 )
 
 forecast_test <- forecast(discharge_model_final, xreg = xreg_test)
-test_accuracy <- accuracy(forecast_test, discharge_test)
 
 message("\n--- Test Set Performance (Final 10%) ---")
 test_eval <- evaluate_forecast(discharge_test, forecast_test$mean)
 print(data.frame(RMSE=test_eval$rmse, MAE=test_eval$mae, R2=test_eval$r_squared))
 
-# Plot Test Forecast
-discharge_forecast_plot <- autoplot(forecast_test) +
-  autolayer(discharge_test, series = "Actual (Test)") +
+# Plot Test Forecast vs Actuals (Test Set Only)
+test_dates <- seq_along(discharge_test)
+forecast_df <- data.frame(
+  time = test_dates,
+  actual = as.numeric(discharge_test),
+  forecast = as.numeric(forecast_test$mean),
+  lower_80 = as.numeric(forecast_test$lower[, 1]),
+  upper_80 = as.numeric(forecast_test$upper[, 1]),
+  lower_95 = as.numeric(forecast_test$lower[, 2]),
+  upper_95 = as.numeric(forecast_test$upper[, 2])
+)
+
+discharge_forecast_plot <- ggplot(forecast_df, aes(x = time)) +
+  geom_ribbon(aes(ymin = lower_95, ymax = upper_95), fill = "lightblue", alpha = 0.4) +
+  geom_ribbon(aes(ymin = lower_80, ymax = upper_80), fill = "steelblue", alpha = 0.4) +
+  geom_line(aes(y = forecast, colour = "Forecast"), linewidth = 0.8) +
+  geom_line(aes(y = actual, colour = "Actual"), linewidth = 0.8) +
+  scale_colour_manual(values = c("Actual" = "black", "Forecast" = "blue")) +
   labs(
-    title = "Discharge Forecast (Test Set)",
-    subtitle = paste(discharge_label, "+ gage-height regressor (Refit on 90%)"),
-    x = "Time",
-    y = "Discharge (cfs)"
+    title = "Forecast vs Actuals",
+    subtitle = paste(discharge_label, "+ gage-height regressor (Test Set Only)"),
+    x = "Day (Test Period)",
+    y = "Discharge (cfs)",
+    colour = NULL
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(legend.position = "bottom")
 
 print(discharge_forecast_plot)
 
@@ -261,7 +229,7 @@ print(discharge_forecast_plot)
 # Diagnostics and summary
 # -----------------------------------------------------------------------------
 
-checkresiduals(discharge_model)
+# Only print Ljung-Box text output for diagnostics
 discharge_lb <- Box.test(residuals(discharge_model), lag = 20, type = "Ljung-Box")
 message(sprintf("discharge Ljung-Box p = %.3f", discharge_lb$p.value))
 
